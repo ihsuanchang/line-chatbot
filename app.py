@@ -1,10 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Thu Jul  3 12:28:27 2025
-
-@author: manysplendid
-"""
-
 import os
 import logging
 from flask import Flask, request, abort
@@ -12,7 +5,6 @@ from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 from openai import OpenAI
-from dotenv import load_dotenv
 
 # 文件處理相關套件
 from docx import Document
@@ -24,9 +16,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-
-# 載入環境變數
-load_dotenv()
 
 # 初始化 LINE Bot
 line_bot_api = LineBotApi(os.getenv('LINE_CHANNEL_ACCESS_TOKEN'))
@@ -92,12 +81,12 @@ def create_system_prompt(docs: dict) -> str:
     將所有文件內容整合成系統訊息
     """
     if not docs:
-        return "你是一個智能助理，請協助回答使用者的問題。"
+        return "你是一個友善的AI助理，請用繁體中文回答使用者的問題。如果使用者詢問關於特定文件或資料的問題，請告訴他們目前沒有載入任何文件資料。"
     
     prompt = "你是一個文件回覆機器人，請根據以下文件內容回答使用者問題：\n\n"
     for name, content in docs.items():
         prompt += f"=== {name} ===\n{content}\n\n"
-    prompt += "請根據上述文件回答使用者的提問。如果問題與文件內容無關，請禮貌地說明並提供一般性的協助。"
+    prompt += "請根據上述文件回答使用者的提問。如果問題與文件內容無關，請禮貌地說明並提供一般性的協助。請用繁體中文回答。"
     return prompt
 
 def get_openai_response(user_message: str) -> str:
@@ -111,9 +100,9 @@ def get_openai_response(user_message: str) -> str:
         ]
         
         response = openai_client.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-4o-mini",  # 使用較經濟的模型
             messages=messages,
-            max_tokens=1000,
+            max_tokens=800,
             temperature=0.7
         )
         
@@ -125,18 +114,14 @@ def get_openai_response(user_message: str) -> str:
 @app.route("/callback", methods=['POST'])
 def callback():
     """LINE webhook端點"""
-    # 獲取 X-Line-Signature header value
-    signature = request.headers['X-Line-Signature']
-
-    # 獲取 request body
+    signature = request.headers.get('X-Line-Signature', '')
     body = request.get_data(as_text=True)
-    logger.info("Request body: " + body)
+    logger.info("收到 LINE 請求")
 
-    # 驗證請求來源
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
-        logger.error("Invalid signature. Please check your channel access token/channel secret.")
+        logger.error("Invalid signature")
         abort(400)
 
     return 'OK'
@@ -159,17 +144,42 @@ def handle_message(event):
 @app.route("/health", methods=['GET'])
 def health_check():
     """健康檢查端點"""
-    return {"status": "healthy", "docs_loaded": len(docs_content)}
+    return {
+        "status": "healthy", 
+        "docs_loaded": len(docs_content),
+        "documents": list(docs_content.keys()) if docs_content else [],
+        "system_prompt_length": len(system_prompt)
+    }
 
 @app.route("/", methods=['GET'])
 def home():
     """首頁"""
+    doc_list = "<br>".join([f"• {doc}" for doc in docs_content.keys()]) if docs_content else "沒有載入文件"
+    
     return f"""
-    <h1>LINE 文件聊天機器人</h1>
-    <p>機器人狀態：運行中</p>
-    <p>已載入文件數量：{len(docs_content)}</p>
-    <p>系統提示長度：{len(system_prompt)} 字元</p>
+    <h1>🤖 LINE 文件聊天機器人</h1>
+    <p>✅ <strong>機器人狀態：</strong>運行中</p>
+    <p>📚 <strong>已載入文件數量：</strong>{len(docs_content)}</p>
+    <p>📋 <strong>載入的文件：</strong></p>
+    <div style="margin-left: 20px;">{doc_list}</div>
+    <p>💬 <strong>系統提示長度：</strong>{len(system_prompt)} 字元</p>
+    <hr>
+    <p><small>使用 LINE 掃描 QR code 與機器人對話</small></p>
     """
+
+@app.route("/reload", methods=['POST'])
+def reload_documents():
+    """重新載入文件（可選功能）"""
+    global docs_content, system_prompt
+    
+    docs_content = load_documents()
+    system_prompt = create_system_prompt(docs_content)
+    
+    return {
+        "status": "reloaded",
+        "docs_count": len(docs_content),
+        "documents": list(docs_content.keys())
+    }
 
 # 應用啟動時載入文件
 def initialize_app():
@@ -182,10 +192,15 @@ def initialize_app():
     docs_content = load_documents()
     system_prompt = create_system_prompt(docs_content)
     
-    logger.info(f"應用初始化完成，載入了 {len(docs_content)} 個文件")
+    if docs_content:
+        logger.info(f"應用初始化完成，載入了 {len(docs_content)} 個文件：{list(docs_content.keys())}")
+    else:
+        logger.warning("應用初始化完成，但沒有載入任何文件")
 
 if __name__ == "__main__":
     initialize_app()
-    
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
+else:
+    # 在 Render 等平台上，這個也會被執行
+    initialize_app()
